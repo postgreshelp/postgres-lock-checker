@@ -1,83 +1,57 @@
 import streamlit as st
+import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-# -------------------------
-# Helper functions
-# -------------------------
+st.set_page_config(page_title="Transaction ID Wraparound Visualizer", layout="wide")
 
-def generate_fake_db(name, total_xids, frozen, age):
-    return {
-        "name": name,
-        "total_xids": total_xids,
-        "frozen": frozen,
-        "age": age,
-    }
+st.title("🔄 PostgreSQL Transaction ID Wraparound Visualizer")
 
-def visualize_wraparound(db):
-    MAX_XID = 2**31  # 2,147,483,648
-    FREEZE_LIMIT = 200_000_000  # typical autovacuum_freeze_max_age
+st.markdown("""
+This tool helps you understand **Transaction ID (XID) wraparound** in PostgreSQL.
+Every transaction consumes an XID, and since XIDs are 32-bit (~4 billion), they eventually wrap around.
+To prevent data loss, PostgreSQL uses **autovacuum freeze** to mark old tuples as frozen.
+""")
 
-    age = db["age"]
+# Parameters
+max_xid = 2**32  # 4 billion
+autovacuum_freeze_max_age = st.slider("Autovacuum Freeze Max Age", min_value=100_000, max_value=1_000_000_000, value=200_000_000, step=100_000)
+xid_age_warning = st.slider("XID Age Warning Threshold", min_value=10_000, max_value=1_000_000_000, value=150_000_000, step=100_000)
 
-    # Risk thresholds
-    if age < FREEZE_LIMIT:
-        risk = "🟢 Safe"
-    elif age < (MAX_XID - 1_000_000_000):
-        risk = "🟡 Warning (Vacuum soon)"
-    else:
-        risk = "🔴 Critical (Close to wraparound!)"
+# Simulation range
+transactions = st.slider("Number of Transactions to Simulate", 1_000, 1_000_000_000, 10_000_000, step=1_000_000)
 
-    # Plot
-    fig, ax = plt.subplots(figsize=(6, 3))
-    x = np.linspace(0, MAX_XID, 500000)
-    y = np.zeros_like(x)
+# Generate fake XIDs
+xids = np.arange(transactions)
+ages = (xids % max_xid)
 
-    ax.plot(x, y, alpha=0)  # invisible baseline
-    ax.axvline(FREEZE_LIMIT, color="orange", linestyle="--", label="Freeze Age Limit")
-    ax.axvline(MAX_XID, color="red", linestyle="--", label="Wraparound (2^31)")
+# Freeze logic
+frozen = ages > autovacuum_freeze_max_age
 
-    # Age pointer
-    ax.axvline(age, color="blue", linewidth=2, label=f"Current Age: {age:,}")
+# Create DataFrame
+df = pd.DataFrame({
+    "XID": xids,
+    "Age": ages,
+    "Frozen": frozen
+})
 
-    ax.set_xlim(0, MAX_XID)
-    ax.set_yticks([])
-    ax.set_xlabel("Transaction ID Age")
-    ax.set_title(f"DB: {db['name']} — Risk: {risk}")
-    ax.legend()
+# Plot
+fig, ax = plt.subplots(figsize=(10, 5))
+ax.plot(df["XID"], df["Age"], label="Transaction Age", color="blue")
+ax.axhline(autovacuum_freeze_max_age, color="red", linestyle="--", label="Autovacuum Freeze Max Age")
+ax.axhline(xid_age_warning, color="orange", linestyle="--", label="Warning Threshold")
+ax.set_xlabel("Transaction ID progression")
+ax.set_ylabel("Age")
+ax.set_title("Transaction ID Wraparound Simulation")
+ax.legend()
+st.pyplot(fig)
 
-    st.pyplot(fig)
+st.markdown("""
+### How to Read:
+- **Blue line** = Transaction ages.
+- **Orange line** = Warning threshold (monitoring alert zone).
+- **Red line** = Autovacuum freeze point (tuples older than this are frozen).
+- When XIDs reach **2^31**, PostgreSQL must prevent wraparound failure.
+""")
 
-    st.info(
-        f"**Database:** {db['name']}  \n"
-        f"**Age:** {age:,}  \n"
-        f"**Frozen Tuples:** {db['frozen']:,}  \n"
-        f"**Total Tuples:** {db['total_xids']:,}  \n"
-        f"**Status:** {risk}"
-    )
-
-# -------------------------
-# Streamlit UI
-# -------------------------
-
-st.title("🌀 PostgreSQL Transaction ID Wraparound Visualizer")
-st.write(
-    "Simulate how PostgreSQL tracks transaction ID age and visualize the risk of **wraparound**.\n"
-    "This demo uses fake datasets. Later, we can connect to a real PostgreSQL database."
-)
-
-# Demo datasets
-fake_dbs = [
-    generate_fake_db("Tiny DB", 1_000_000, 900_000, 10_000),
-    generate_fake_db("Busy OLTP", 500_000_000, 400_000_000, 150_000_000),
-    generate_fake_db("Neglected Warehouse", 2_000_000_000, 100_000_000, 1_900_000_000),
-]
-
-db_names = [db["name"] for db in fake_dbs]
-choice = st.selectbox("Choose a database to visualize:", db_names)
-
-# Render visualization
-selected_db = next(db for db in fake_dbs if db["name"] == choice)
-visualize_wraparound(selected_db)
-
-st.caption("💡 Later we can extend this to run `SELECT age(datfrozenxid) FROM pg_database;` on a live PostgreSQL instance.")
+st.info("✅ Try adjusting the sliders above to see how different autovacuum thresholds affect wraparound risk.")
